@@ -1,21 +1,35 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="stylesheet" href="styles.css">
-    <title>Learning Journal</title>
+    <title>Knowledge Journal</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
+        header { background: #4CAF50; color: white; padding: 10px 20px; }
+        h1 { margin: 0; }
+        .entry { border-bottom: 1px solid #ccc; padding: 10px; }
+        .entry h2 { margin: 0; }
+        .entry p { margin: 5px 0; }
+    </style>
 </head>
 <body>
-    <h1>Learning Journal</h1>
-    <form id="subject-form">
-        <input type="text" id="subject-input" placeholder="Enter subject" required>
-        <button type="submit">Add Subject</button>
-    </form>
-    <div id="checklist-container">
-        <h2>Checklists</h2>
-        <ul id="checklist"></ul>
-    </div>
-    <script src="script.js"></script>
+    <header>
+        <h1>Knowledge Journal</h1>
+    </header>
+    <main>
+        <div class="entry">
+            <h2>Entry Title 1</h2>
+            <p>This is the content of the first entry in the Knowledge Journal.</p>
+        </div>
+        <div class="entry">
+            <h2>Entry Title 2</h2>
+            <p>This is the content of the second entry in the Knowledge Journal.</p>
+        </div>
+    </main>
+    <script>
+        console.log('Knowledge Journal loaded');
+    </script>
 </body>
 </html>
