@@ -1,35 +1,82 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Knowledge Journal</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
-        header { background: #4CAF50; color: white; padding: 10px 20px; }
-        h1 { margin: 0; }
-        .entry { border-bottom: 1px solid #ccc; padding: 10px; }
-        .entry h2 { margin: 0; }
-        .entry p { margin: 5px 0; }
-    </style>
+    <link rel="stylesheet" href="styles.css">
 </head>
 <body>
     <header>
-        <h1>Knowledge Journal</h1>
+        <h1>Welcome to Your Knowledge Journal</h1>
+        <button onclick="toggleTheme()">Toggle Light/Dark Theme</button>
+        <input type="file" id="imageUpload" accept="image/*" onchange="uploadImage()" />
     </header>
-    <main>
-        <div class="entry">
-            <h2>Entry Title 1</h2>
-            <p>This is the content of the first entry in the Knowledge Journal.</p>
-        </div>
-        <div class="entry">
-            <h2>Entry Title 2</h2>
-            <p>This is the content of the second entry in the Knowledge Journal.</p>
-        </div>
-    </main>
+    <section>
+        <h2>Learning Log</h2>
+        <textarea id="journalEntry" placeholder="Write your thoughts here..."></textarea>
+        <button onclick="saveEntry()">Save Entry</button>
+        <div id="entryList"></div>
+    </section>
+    <section>
+        <h2>Advanced Filtering</h2>
+        <input type="text" id="filterInput" placeholder="Filter entries" oninput="filterEntries()" />
+    </section>
+    <section>
+        <h2>Learning Checklists</h2>
+        <ul id="checklist"></ul>
+        <input type="text" id="checklistItem" placeholder="Add checklist item" />
+        <button onclick="addChecklistItem()">Add</button>
+    </section>
     <script>
-        console.log('Knowledge Journal loaded');
+        // JavaScript for functionalities
+        function toggleTheme() {
+            document.body.classList.toggle('light-theme');
+        }
+
+        function uploadImage() {
+            const fileInput = document.getElementById('imageUpload');
+            const file = fileInput.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function (e) {
+                    const img = document.createElement('img');
+                    img.src = e.target.result;
+                    document.body.appendChild(img);
+                };
+                reader.readAsDataURL(file);
+            }
+        }
+
+        function saveEntry() {
+            const entry = document.getElementById('journalEntry').value;
+            const entryList = document.getElementById('entryList');
+            const newEntry = document.createElement('div');
+            newEntry.innerText = entry;
+            entryList.appendChild(newEntry);
+            document.getElementById('journalEntry').value = '';
+        }
+
+        function filterEntries() {
+            const filter = document.getElementById('filterInput').value.toLowerCase();
+            const entries = document.getElementById('entryList').children;
+            for (let entry of entries) {
+                if (entry.innerText.toLowerCase().includes(filter)) {
+                    entry.style.display = '';
+                } else {
+                    entry.style.display = 'none';
+                }
+            }
+        }
+
+        function addChecklistItem() {
+            const item = document.getElementById('checklistItem').value;
+            const checklist = document.getElementById('checklist');
+            const newItem = document.createElement('li');
+            newItem.innerText = item;
+            checklist.appendChild(newItem);
+            document.getElementById('checklistItem').value = '';
+        }
     </script>
 </body>
 </html>
