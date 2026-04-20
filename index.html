@@ -294,6 +294,44 @@
 
   .modal-actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:8px; }
 
+  /* ── TOAST ── */
+  #toast {
+    position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
+    background: var(--text); color: var(--card-bg);
+    font-family: var(--pixel); font-size: 8px;
+    padding: 12px 22px; border: 3px solid var(--border);
+    box-shadow: 4px 4px 0 var(--border);
+    opacity: 0; pointer-events: none;
+    transition: opacity .2s; z-index: 999;
+    white-space: nowrap;
+  }
+  #toast.show { opacity: 1; }
+
+  /* ── MODAL ERROR ── */
+  .modal-error {
+    font-family: var(--mono); font-size: 16px;
+    color: #c0392b; background: #fce4e4;
+    border: 2px solid #e57373; padding: 6px 12px;
+    margin-bottom: 12px; display: none;
+  }
+  .modal-error.show { display: block; }
+
+  /* ── DELETE CONFIRM ── */
+  .delete-confirm {
+    display: none; position: absolute; inset: 0;
+    background: rgba(255,245,248,.97);
+    border: 3px solid var(--btn-danger);
+    z-index: 10; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 14px; padding: 20px; text-align: center;
+  }
+  .delete-confirm.show { display: flex; }
+  .delete-confirm p {
+    font-family: var(--pixel); font-size: 8px;
+    color: var(--text); line-height: 1.8;
+  }
+  .delete-confirm .dc-btns { display: flex; gap: 10px; }
+
   /* ── PIXEL SCROLLBAR ── */
   ::-webkit-scrollbar { width: 10px; }
   ::-webkit-scrollbar-track { background: var(--bg); }
@@ -331,10 +369,13 @@
   Your journal is empty...<br>Add your first entry!
 </div>
 
+<div id="toast"></div>
+
 <!-- ── ADD / EDIT MODAL ── -->
 <div class="overlay" id="overlay" onclick="closeIfOutside(event)">
   <div class="modal" id="modal">
     <h2 id="modalTitle">✦ New Entry</h2>
+    <div class="modal-error" id="modalError"></div>
 
     <label>ENTRY TITLE</label>
     <input type="text" id="fTitle" placeholder="What did you learn?">
@@ -360,13 +401,72 @@
 </div>
 
 <script>
-let entries = JSON.parse(localStorage.getItem('kj_entries') || '[]');
+// ── Storage strategy ──
+// Text metadata  → localStorage  (tiny, fast)
+// Image blobs    → IndexedDB     (no size limit)
+
+const DB_NAME = 'kj_db', DB_VER = 1, STORE = 'images';
+let db = null;
+
+function openDB() {
+  return new Promise((res, rej) => {
+    const req = indexedDB.open(DB_NAME, DB_VER);
+    req.onupgradeneeded = e => e.target.result.createObjectStore(STORE);
+    req.onsuccess = e => { db = e.target.result; res(db); };
+    req.onerror   = e => rej(e.target.error);
+  });
+}
+
+function idbPut(key, value) {
+  return new Promise((res, rej) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).put(value, key);
+    tx.oncomplete = res; tx.onerror = e => rej(e.target.error);
+  });
+}
+
+function idbGet(key) {
+  return new Promise((res, rej) => {
+    const tx = db.transaction(STORE, 'readonly');
+    const req = tx.objectStore(STORE).get(key);
+    req.onsuccess = () => res(req.result);
+    req.onerror   = e => rej(e.target.error);
+  });
+}
+
+function idbDel(key) {
+  return new Promise((res, rej) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).delete(key);
+    tx.oncomplete = res; tx.onerror = e => rej(e.target.error);
+  });
+}
+
+// ── App state ──
+// entries[] stores only text: { id, title, tags, notes, date, imageCount }
+// Images stored in IDB as key `img_<entryId>` → array of {dataUrl, name}
+
+let entries = [];
 let editingId = null;
-let pendingImages = []; // {dataUrl, name}
+let pendingImages = [];
 let sortMode = 'date';
 
-function save() {
-  localStorage.setItem('kj_entries', JSON.stringify(entries));
+function saveMetadata() {
+  const slim = entries.map(({id,title,tags,notes,date,imageCount}) =>
+    ({id,title,tags,notes,date,imageCount}));
+  localStorage.setItem('kj_entries', JSON.stringify(slim));
+}
+
+async function saveImages(entryId, images) {
+  if (images.length > 0) {
+    await idbPut(`img_${entryId}`, images);
+  } else {
+    await idbDel(`img_${entryId}`);
+  }
+}
+
+async function loadImages(entryId) {
+  return (await idbGet(`img_${entryId}`)) || [];
 }
 
 /* ── MODAL ── */
@@ -380,7 +480,11 @@ function openModal(id = null) {
     document.getElementById('fTitle').value = e.title;
     document.getElementById('fTags').value = e.tags.join(', ');
     document.getElementById('fNotes').value = e.notes;
-    pendingImages = e.images ? [...e.images] : [];
+    // Load images from IDB into pendingImages
+    loadImages(id).then(imgs => {
+      pendingImages = [...imgs];
+      renderImgStrip();
+    });
   } else {
     document.getElementById('fTitle').value = '';
     document.getElementById('fTags').value = '';
@@ -404,7 +508,7 @@ function handleImgSelect(e) {
   const files = [...e.target.files];
   const MAX = 10 * 1024 * 1024;
   files.forEach(f => {
-    if (f.size > MAX) { alert(`"${f.name}" exceeds 10 MB — skipped.`); return; }
+    if (f.size > MAX) { showToast(`"${f.name}" exceeds 10 MB — skipped.`); return; }
     const r = new FileReader();
     r.onload = ev => {
       pendingImages.push({ dataUrl: ev.target.result, name: f.name });
@@ -432,38 +536,61 @@ function removeImg(i) {
   renderImgStrip();
 }
 
-function saveEntry() {
+async function saveEntry() {
   const title = document.getElementById('fTitle').value.trim();
-  if (!title) { alert('Please enter a title!'); return; }
-  const tags = document.getElementById('fTags').value.split(',').map(t=>t.trim()).filter(Boolean);
+  if (!title) { showModalError('⚠ Please enter a title!'); return; }
+  const tags  = document.getElementById('fTags').value.split(',').map(t=>t.trim()).filter(Boolean);
   const notes = document.getElementById('fNotes').value.trim();
+  const wasEditing = !!editingId;
 
   if (editingId) {
     const idx = entries.findIndex(x => x.id === editingId);
-    entries[idx] = { ...entries[idx], title, tags, notes, images: [...pendingImages] };
+    entries[idx] = { ...entries[idx], title, tags, notes, imageCount: pendingImages.length };
+    await saveImages(editingId, pendingImages);
   } else {
-    entries.unshift({ id: Date.now().toString(), title, tags, notes, images: [...pendingImages], date: new Date().toISOString() });
+    const id = Date.now().toString();
+    entries.unshift({ id, title, tags, notes, imageCount: pendingImages.length, date: new Date().toISOString() });
+    await saveImages(id, pendingImages);
   }
-  save();
+
+  saveMetadata();
   closeModal();
-  renderGrid();
+  await renderGrid();
+  showToast(wasEditing ? '✦ Entry updated!' : '✦ Entry saved!');
 }
 
 function deleteEntry(id) {
-  if (!confirm('Delete this entry? 🗑️')) return;
+  const card = document.querySelector(`.card[data-id="${id}"]`);
+  if (!card || card.querySelector('.delete-confirm')) return;
+  const dc = document.createElement('div');
+  dc.className = 'delete-confirm show';
+  dc.innerHTML = `
+    <p>Delete this entry?<br>This cannot be undone.</p>
+    <div class="dc-btns">
+      <button class="btn danger" onclick="confirmDelete('${id}')">🗑 Delete</button>
+      <button class="btn" onclick="cancelDelete('${id}')">✕ Cancel</button>
+    </div>`;
+  card.appendChild(dc);
+}
+
+async function confirmDelete(id) {
   entries = entries.filter(x => x.id !== id);
-  save();
-  renderGrid();
+  await idbDel(`img_${id}`);
+  saveMetadata();
+  await renderGrid();
+  showToast('Entry deleted!');
+}
+
+function cancelDelete(id) {
+  const card = document.querySelector(`.card[data-id="${id}"]`);
+  if (card) { const dc = card.querySelector('.delete-confirm'); if (dc) dc.remove(); }
 }
 
 /* ── SORT ── */
-function sortBy(mode) {
-  sortMode = mode;
-  renderGrid();
-}
+function sortBy(mode) { sortMode = mode; renderGrid(); }
 
 /* ── RENDER ── */
-function renderGrid() {
+async function renderGrid() {
   const q = document.getElementById('searchInput').value.toLowerCase();
   let list = entries.filter(e =>
     e.title.toLowerCase().includes(q) ||
@@ -473,47 +600,53 @@ function renderGrid() {
   if (sortMode === 'title') list = [...list].sort((a,b) => a.title.localeCompare(b.title));
   else list = [...list].sort((a,b) => new Date(b.date) - new Date(a.date));
 
-  const grid = document.getElementById('grid');
+  const grid  = document.getElementById('grid');
   const empty = document.getElementById('emptyState');
   grid.innerHTML = '';
 
   if (!list.length) { empty.style.display = 'block'; return; }
   empty.style.display = 'none';
 
+  // Load all images in parallel
+  const imageMap = {};
+  await Promise.all(list.map(async e => {
+    if (e.imageCount > 0) imageMap[e.id] = await loadImages(e.id);
+    else imageMap[e.id] = [];
+  }));
+
   list.forEach(e => {
     const card = document.createElement('div');
     card.className = 'card';
     card.dataset.id = e.id;
 
-    // image slider
+    const imgs = imageMap[e.id] || [];
     let sliderHtml = '';
-    if (e.images && e.images.length > 0) {
-      const imgs = e.images.map(img => `<img src="${img.dataUrl}" alt="${img.name}">`).join('');
-      const dots = e.images.map((_,i) => `<span class="${i===0?'active':''}" onclick="slideTo('${e.id}',${i})"></span>`).join('');
-      const nav = e.images.length > 1
+    if (imgs.length > 0) {
+      const imgTags = imgs.map(img => `<img src="${img.dataUrl}" alt="${escHtml(img.name)}">`).join('');
+      const dots    = imgs.map((_,i) => `<span class="${i===0?'active':''}" onclick="slideTo('${e.id}',${i})"></span>`).join('');
+      const nav     = imgs.length > 1
         ? `<div class="slider-nav">
             <button onclick="slide('${e.id}',-1)">◀</button>
             <button onclick="slide('${e.id}',1)">▶</button>
            </div>` : '';
       sliderHtml = `
         <div class="slider" id="slider-${e.id}">
-          <div class="slider-track" id="track-${e.id}">${imgs}</div>
+          <div class="slider-track" id="track-${e.id}">${imgTags}</div>
           ${nav}
         </div>
         <div class="slider-dots" id="dots-${e.id}">${dots}</div>`;
     }
 
-    const tagsHtml = e.tags.map(t => `<span class="tag">${t}</span>`).join('');
-    const date = new Date(e.date).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+    const tagsHtml = e.tags.map(t => `<span class="tag">${escHtml(t)}</span>`).join('');
+    const date     = new Date(e.date).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
     const longText = e.notes.length > 200;
-    const textId = `txt-${e.id}`;
 
     card.innerHTML = `
       ${sliderHtml}
       <div class="card-body">
         <div class="card-title">${escHtml(e.title)}</div>
         ${tagsHtml ? `<div class="card-tags">${tagsHtml}</div>` : ''}
-        <div class="card-text" id="${textId}">${escHtml(e.notes)}</div>
+        <div class="card-text" id="txt-${e.id}">${escHtml(e.notes)}</div>
         ${longText ? `<button class="read-more" id="rm-${e.id}" onclick="toggleExpand('${e.id}')">▼ read more</button>` : ''}
         <div class="card-date">📅 ${date}</div>
       </div>
@@ -526,11 +659,11 @@ function renderGrid() {
 }
 
 function escHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 function toggleExpand(id) {
-  const el = document.getElementById(`txt-${id}`);
+  const el  = document.getElementById(`txt-${id}`);
   const btn = document.getElementById(`rm-${id}`);
   const expanded = el.classList.toggle('expanded');
   btn.textContent = expanded ? '▲ collapse' : '▼ read more';
@@ -540,28 +673,42 @@ function toggleExpand(id) {
 const sliderState = {};
 function slide(id, dir) {
   const entry = entries.find(e => e.id === id);
-  if (!entry || !entry.images) return;
-  const total = entry.images.length;
+  if (!entry) return;
+  const total = entry.imageCount || 0;
   sliderState[id] = ((sliderState[id] ?? 0) + dir + total) % total;
-  applySlide(id, total);
+  applySlide(id);
 }
 function slideTo(id, idx) {
   sliderState[id] = idx;
-  const entry = entries.find(e => e.id === id);
-  applySlide(id, entry.images.length);
+  applySlide(id);
 }
-function applySlide(id, total) {
-  const idx = sliderState[id] ?? 0;
-  const track = document.getElementById(`track-${id}`);
+function applySlide(id) {
+  const idx    = sliderState[id] ?? 0;
+  const track  = document.getElementById(`track-${id}`);
   if (track) track.style.transform = `translateX(-${idx * 100}%)`;
   const dotsEl = document.getElementById(`dots-${id}`);
-  if (dotsEl) {
-    [...dotsEl.querySelectorAll('span')].forEach((d,i) => d.classList.toggle('active', i===idx));
-  }
+  if (dotsEl) [...dotsEl.querySelectorAll('span')].forEach((d,i) => d.classList.toggle('active', i===idx));
 }
 
-// Init
-renderGrid();
+/* ── TOASTS ── */
+function showToast(msg, duration = 3000) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), duration);
+}
+function showModalError(msg) {
+  const el = document.getElementById('modalError');
+  el.textContent = msg; el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 3000);
+}
+
+/* ── INIT ── */
+openDB().then(() => {
+  entries = JSON.parse(localStorage.getItem('kj_entries') || '[]');
+  renderGrid();
+}).catch(err => {
+  showToast('⚠ Storage error: ' + err.message);
+});
 </script>
 </body>
 </html>
