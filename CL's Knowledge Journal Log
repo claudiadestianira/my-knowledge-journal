@@ -294,6 +294,44 @@
 
   .modal-actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:8px; }
 
+  /* ── TOAST ── */
+  #toast {
+    position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
+    background: var(--text); color: var(--card-bg);
+    font-family: var(--pixel); font-size: 8px;
+    padding: 12px 22px; border: 3px solid var(--border);
+    box-shadow: 4px 4px 0 var(--border);
+    opacity: 0; pointer-events: none;
+    transition: opacity .2s; z-index: 999;
+    white-space: nowrap;
+  }
+  #toast.show { opacity: 1; }
+
+  /* ── MODAL ERROR ── */
+  .modal-error {
+    font-family: var(--mono); font-size: 16px;
+    color: #c0392b; background: #fce4e4;
+    border: 2px solid #e57373; padding: 6px 12px;
+    margin-bottom: 12px; display: none;
+  }
+  .modal-error.show { display: block; }
+
+  /* ── DELETE CONFIRM ── */
+  .delete-confirm {
+    display: none; position: absolute; inset: 0;
+    background: rgba(255,245,248,.97);
+    border: 3px solid var(--btn-danger);
+    z-index: 10; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 14px; padding: 20px; text-align: center;
+  }
+  .delete-confirm.show { display: flex; }
+  .delete-confirm p {
+    font-family: var(--pixel); font-size: 8px;
+    color: var(--text); line-height: 1.8;
+  }
+  .delete-confirm .dc-btns { display: flex; gap: 10px; }
+
   /* ── PIXEL SCROLLBAR ── */
   ::-webkit-scrollbar { width: 10px; }
   ::-webkit-scrollbar-track { background: var(--bg); }
@@ -331,10 +369,13 @@
   Your journal is empty...<br>Add your first entry!
 </div>
 
+<div id="toast"></div>
+
 <!-- ── ADD / EDIT MODAL ── -->
 <div class="overlay" id="overlay" onclick="closeIfOutside(event)">
   <div class="modal" id="modal">
     <h2 id="modalTitle">✦ New Entry</h2>
+    <div class="modal-error" id="modalError"></div>
 
     <label>ENTRY TITLE</label>
     <input type="text" id="fTitle" placeholder="What did you learn?">
@@ -360,110 +401,193 @@
 </div>
 
 <script>
-let entries = JSON.parse(localStorage.getItem('kj_entries') || '[]');
-let editingId = null;
-let pendingImages = []; // {dataUrl, name}
-let sortMode = 'date';
+// ═══════════════════════════════════════════════════
+//  SUPABASE CONFIG — pre-connected, no setup needed
+// ═══════════════════════════════════════════════════
+const SUPABASE_URL = 'https://uabfxlxghsubaiifpxgl.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVhYmZ4bHhnaHN1YmFpaWZweGdsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY2NTA4ODYsImV4cCI6MjA5MjIyNjg4Nn0.e2CcOYJD9LvVwTP7AIPD5uAOG44OMNb0zngYDPgFwTg';
+const TABLE        = 'journal_entries';
+const IMG_BUCKET   = 'journal-images';
 
-function save() {
-  localStorage.setItem('kj_entries', JSON.stringify(entries));
+// ── helpers ──
+const sbHeaders = () => ({
+  'Content-Type':  'application/json',
+  'apikey':        SUPABASE_KEY,
+  'Authorization': `Bearer ${SUPABASE_KEY}`,
+  'Prefer':        'return=representation'
+});
+
+async function sbFetch(path, opts = {}) {
+  const r = await fetch(`${SUPABASE_URL}${path}`, { headers: sbHeaders(), ...opts });
+  if (!r.ok) { const t = await r.text(); throw new Error(t); }
+  return r.status === 204 ? null : r.json();
 }
 
-/* ── MODAL ── */
-function openModal(id = null) {
-  editingId = id;
-  pendingImages = [];
-  document.getElementById('modalTitle').textContent = id ? '✦ Edit Entry' : '✦ New Entry';
+// ── image storage via Supabase Storage ──
+async function uploadImages(entryId, images) {
+  const urls = [];
+  for (const img of images) {
+    if (!img.dataUrl.startsWith('data:')) { urls.push(img.dataUrl); continue; }
+    const blob  = await (await fetch(img.dataUrl)).blob();
+    const ext   = img.name.split('.').pop() || 'jpg';
+    const path  = `${entryId}/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
+    const upRes = await fetch(
+      `${SUPABASE_URL}/storage/v1/object/${IMG_BUCKET}/${path}`,
+      { method: 'POST', headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Content-Type': blob.type }, body: blob }
+    );
+    if (!upRes.ok) throw new Error('Image upload failed: ' + await upRes.text());
+    urls.push(`${SUPABASE_URL}/storage/v1/object/public/${IMG_BUCKET}/${path}`);
+  }
+  return urls;
+}
 
+async function deleteEntryImages(imageUrls) {
+  const paths = imageUrls
+    .filter(u => u.includes(`/${IMG_BUCKET}/`))
+    .map(u => u.split(`/${IMG_BUCKET}/`)[1]);
+  if (!paths.length) return;
+  await fetch(`${SUPABASE_URL}/storage/v1/object/${IMG_BUCKET}`, {
+    method: 'DELETE',
+    headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prefixes: paths })
+  });
+}
+
+// ── app state ──
+let entries       = [];
+let editingId     = null;
+let pendingImages = [];
+let sortMode      = 'date';
+
+// ── data layer ──
+async function loadEntries() {
+  const data = await sbFetch(`/rest/v1/${TABLE}?order=date.desc&select=*`);
+  entries = (data || []).map(r => ({
+    id:        r.id,
+    title:     r.title,
+    tags:      r.tags || [],
+    notes:     r.notes || '',
+    date:      r.date,
+    imageUrls: r.image_urls || []
+  }));
+}
+
+async function sbInsert(row) {
+  const res = await sbFetch(`/rest/v1/${TABLE}`, { method: 'POST', body: JSON.stringify(row) });
+  return res[0];
+}
+async function sbUpdate(id, row) {
+  await sbFetch(`/rest/v1/${TABLE}?id=eq.${id}`, { method: 'PATCH', body: JSON.stringify(row) });
+}
+async function sbDelete(id) {
+  await sbFetch(`/rest/v1/${TABLE}?id=eq.${id}`, { method: 'DELETE' });
+}
+
+// ── modal ──
+function openModal(id = null) {
+  editingId = id; pendingImages = [];
+  document.getElementById('modalTitle').textContent = id ? '✦ Edit Entry' : '✦ New Entry';
   if (id) {
     const e = entries.find(x => x.id === id);
     document.getElementById('fTitle').value = e.title;
-    document.getElementById('fTags').value = e.tags.join(', ');
+    document.getElementById('fTags').value  = e.tags.join(', ');
     document.getElementById('fNotes').value = e.notes;
-    pendingImages = e.images ? [...e.images] : [];
+    pendingImages = (e.imageUrls || []).map(url => ({ dataUrl: url, name: url.split('/').pop() }));
   } else {
     document.getElementById('fTitle').value = '';
-    document.getElementById('fTags').value = '';
+    document.getElementById('fTags').value  = '';
     document.getElementById('fNotes').value = '';
   }
   renderImgStrip();
   document.getElementById('overlay').classList.add('open');
 }
-
 function closeModal() {
   document.getElementById('overlay').classList.remove('open');
-  editingId = null;
-  pendingImages = [];
+  editingId = null; pendingImages = [];
 }
-
 function closeIfOutside(e) {
   if (e.target === document.getElementById('overlay')) closeModal();
 }
 
 function handleImgSelect(e) {
-  const files = [...e.target.files];
-  const MAX = 10 * 1024 * 1024;
+  const files = [...e.target.files], MAX = 10 * 1024 * 1024;
   files.forEach(f => {
-    if (f.size > MAX) { alert(`"${f.name}" exceeds 10 MB — skipped.`); return; }
+    if (f.size > MAX) { showToast(`"${f.name}" exceeds 10 MB — skipped.`); return; }
     const r = new FileReader();
-    r.onload = ev => {
-      pendingImages.push({ dataUrl: ev.target.result, name: f.name });
-      renderImgStrip();
-    };
+    r.onload = ev => { pendingImages.push({ dataUrl: ev.target.result, name: f.name }); renderImgStrip(); };
     r.readAsDataURL(f);
   });
   e.target.value = '';
 }
-
 function renderImgStrip() {
   const strip = document.getElementById('imgPreviewStrip');
   strip.innerHTML = '';
   pendingImages.forEach((img, i) => {
     const div = document.createElement('div');
     div.className = 'img-thumb';
-    div.innerHTML = `<img src="${img.dataUrl}" alt="${img.name}">
+    div.innerHTML = `<img src="${img.dataUrl}" alt="${escHtml(img.name)}">
       <button onclick="removeImg(${i})" title="Remove">✕</button>`;
     strip.appendChild(div);
   });
 }
+function removeImg(i) { pendingImages.splice(i, 1); renderImgStrip(); }
 
-function removeImg(i) {
-  pendingImages.splice(i, 1);
-  renderImgStrip();
-}
-
-function saveEntry() {
+async function saveEntry() {
   const title = document.getElementById('fTitle').value.trim();
-  if (!title) { alert('Please enter a title!'); return; }
-  const tags = document.getElementById('fTags').value.split(',').map(t=>t.trim()).filter(Boolean);
+  if (!title) { showModalError('⚠ Please enter a title!'); return; }
+  const tags  = document.getElementById('fTags').value.split(',').map(t => t.trim()).filter(Boolean);
   const notes = document.getElementById('fNotes').value.trim();
-
-  if (editingId) {
-    const idx = entries.findIndex(x => x.id === editingId);
-    entries[idx] = { ...entries[idx], title, tags, notes, images: [...pendingImages] };
-  } else {
-    entries.unshift({ id: Date.now().toString(), title, tags, notes, images: [...pendingImages], date: new Date().toISOString() });
+  const wasEditing = !!editingId;
+  const btn = document.querySelector('#modal .btn:not(.danger)');
+  btn.textContent = '⏳ Saving...'; btn.disabled = true;
+  try {
+    const imageUrls = await uploadImages(editingId || 'new', pendingImages);
+    if (wasEditing) {
+      await sbUpdate(editingId, { title, tags, notes, image_urls: imageUrls });
+    } else {
+      await sbInsert({ title, tags, notes, image_urls: imageUrls, date: new Date().toISOString() });
+    }
+    await loadEntries();
+    closeModal();
+    await renderGrid();
+    showToast(wasEditing ? '✦ Entry updated!' : '✦ Entry saved!');
+  } catch(err) {
+    showModalError('⚠ Save failed: ' + err.message);
+  } finally {
+    btn.textContent = '💾 Save Entry'; btn.disabled = false;
   }
-  save();
-  closeModal();
-  renderGrid();
 }
 
 function deleteEntry(id) {
-  if (!confirm('Delete this entry? 🗑️')) return;
-  entries = entries.filter(x => x.id !== id);
-  save();
-  renderGrid();
+  const card = document.querySelector(`.card[data-id="${id}"]`);
+  if (!card || card.querySelector('.delete-confirm')) return;
+  const dc = document.createElement('div');
+  dc.className = 'delete-confirm show';
+  dc.innerHTML = `
+    <p>Delete this entry?<br>This cannot be undone.</p>
+    <div class="dc-btns">
+      <button class="btn danger" onclick="confirmDelete('${id}')">🗑 Delete</button>
+      <button class="btn" onclick="cancelDelete('${id}')">✕ Cancel</button>
+    </div>`;
+  card.appendChild(dc);
+}
+async function confirmDelete(id) {
+  const entry = entries.find(e => e.id === id);
+  if (entry?.imageUrls?.length) await deleteEntryImages(entry.imageUrls);
+  await sbDelete(id);
+  await loadEntries();
+  await renderGrid();
+  showToast('Entry deleted!');
+}
+function cancelDelete(id) {
+  const card = document.querySelector(`.card[data-id="${id}"]`);
+  if (card) { const dc = card.querySelector('.delete-confirm'); if (dc) dc.remove(); }
 }
 
-/* ── SORT ── */
-function sortBy(mode) {
-  sortMode = mode;
-  renderGrid();
-}
+// ── sort & render ──
+function sortBy(mode) { sortMode = mode; renderGrid(); }
 
-/* ── RENDER ── */
-function renderGrid() {
+async function renderGrid() {
   const q = document.getElementById('searchInput').value.toLowerCase();
   let list = entries.filter(e =>
     e.title.toLowerCase().includes(q) ||
@@ -473,47 +597,43 @@ function renderGrid() {
   if (sortMode === 'title') list = [...list].sort((a,b) => a.title.localeCompare(b.title));
   else list = [...list].sort((a,b) => new Date(b.date) - new Date(a.date));
 
-  const grid = document.getElementById('grid');
+  const grid  = document.getElementById('grid');
   const empty = document.getElementById('emptyState');
   grid.innerHTML = '';
 
-  if (!list.length) { empty.style.display = 'block'; return; }
+  if (!list.length) {
+    empty.style.display = 'block';
+    empty.innerHTML = '<span>✨</span>Your journal is empty...<br>Add your first entry!';
+    return;
+  }
   empty.style.display = 'none';
 
   list.forEach(e => {
     const card = document.createElement('div');
-    card.className = 'card';
-    card.dataset.id = e.id;
+    card.className = 'card'; card.dataset.id = e.id;
 
-    // image slider
+    const imgs = e.imageUrls || [];
     let sliderHtml = '';
-    if (e.images && e.images.length > 0) {
-      const imgs = e.images.map(img => `<img src="${img.dataUrl}" alt="${img.name}">`).join('');
-      const dots = e.images.map((_,i) => `<span class="${i===0?'active':''}" onclick="slideTo('${e.id}',${i})"></span>`).join('');
-      const nav = e.images.length > 1
-        ? `<div class="slider-nav">
-            <button onclick="slide('${e.id}',-1)">◀</button>
-            <button onclick="slide('${e.id}',1)">▶</button>
-           </div>` : '';
-      sliderHtml = `
-        <div class="slider" id="slider-${e.id}">
-          <div class="slider-track" id="track-${e.id}">${imgs}</div>
-          ${nav}
-        </div>
+    if (imgs.length > 0) {
+      const imgTags = imgs.map(url => `<img src="${url}" alt="entry image" loading="lazy">`).join('');
+      const dots    = imgs.map((_,i) => `<span class="${i===0?'active':''}" onclick="slideTo('${e.id}',${i})"></span>`).join('');
+      const nav     = imgs.length > 1 ? `<div class="slider-nav">
+        <button onclick="slide('${e.id}',-1)">◀</button>
+        <button onclick="slide('${e.id}',1)">▶</button></div>` : '';
+      sliderHtml = `<div class="slider" id="slider-${e.id}">
+        <div class="slider-track" id="track-${e.id}">${imgTags}</div>${nav}</div>
         <div class="slider-dots" id="dots-${e.id}">${dots}</div>`;
     }
 
-    const tagsHtml = e.tags.map(t => `<span class="tag">${t}</span>`).join('');
-    const date = new Date(e.date).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+    const tagsHtml = e.tags.map(t => `<span class="tag">${escHtml(t)}</span>`).join('');
+    const date     = new Date(e.date).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
     const longText = e.notes.length > 200;
-    const textId = `txt-${e.id}`;
 
-    card.innerHTML = `
-      ${sliderHtml}
+    card.innerHTML = `${sliderHtml}
       <div class="card-body">
         <div class="card-title">${escHtml(e.title)}</div>
         ${tagsHtml ? `<div class="card-tags">${tagsHtml}</div>` : ''}
-        <div class="card-text" id="${textId}">${escHtml(e.notes)}</div>
+        <div class="card-text" id="txt-${e.id}">${escHtml(e.notes)}</div>
         ${longText ? `<button class="read-more" id="rm-${e.id}" onclick="toggleExpand('${e.id}')">▼ read more</button>` : ''}
         <div class="card-date">📅 ${date}</div>
       </div>
@@ -526,9 +646,8 @@ function renderGrid() {
 }
 
 function escHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
-
 function toggleExpand(id) {
   const el = document.getElementById(`txt-${id}`);
   const btn = document.getElementById(`rm-${id}`);
@@ -536,32 +655,46 @@ function toggleExpand(id) {
   btn.textContent = expanded ? '▲ collapse' : '▼ read more';
 }
 
-/* ── SLIDER ── */
+// ── slider ──
 const sliderState = {};
 function slide(id, dir) {
   const entry = entries.find(e => e.id === id);
-  if (!entry || !entry.images) return;
-  const total = entry.images.length;
+  if (!entry) return;
+  const total = (entry.imageUrls||[]).length;
   sliderState[id] = ((sliderState[id] ?? 0) + dir + total) % total;
-  applySlide(id, total);
+  applySlide(id);
 }
-function slideTo(id, idx) {
-  sliderState[id] = idx;
-  const entry = entries.find(e => e.id === id);
-  applySlide(id, entry.images.length);
-}
-function applySlide(id, total) {
+function slideTo(id, idx) { sliderState[id] = idx; applySlide(id); }
+function applySlide(id) {
   const idx = sliderState[id] ?? 0;
   const track = document.getElementById(`track-${id}`);
-  if (track) track.style.transform = `translateX(-${idx * 100}%)`;
+  if (track) track.style.transform = `translateX(-${idx*100}%)`;
   const dotsEl = document.getElementById(`dots-${id}`);
-  if (dotsEl) {
-    [...dotsEl.querySelectorAll('span')].forEach((d,i) => d.classList.toggle('active', i===idx));
-  }
+  if (dotsEl) [...dotsEl.querySelectorAll('span')].forEach((d,i) => d.classList.toggle('active', i===idx));
 }
 
-// Init
-renderGrid();
+// ── toasts ──
+function showToast(msg, duration = 3000) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), duration);
+}
+function showModalError(msg) {
+  const el = document.getElementById('modalError');
+  el.textContent = msg; el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 4000);
+}
+
+// ── init ──
+(async () => {
+  try {
+    await loadEntries();
+    await renderGrid();
+  } catch(e) {
+    showToast('⚠ Could not load entries: ' + e.message);
+  }
+})();
 </script>
+
 </body>
 </html>
