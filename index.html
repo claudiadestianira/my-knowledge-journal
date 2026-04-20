@@ -3,80 +3,87 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Knowledge Journal</title>
-    <link rel="stylesheet" href="styles.css">
+    <title>My Knowledge Journal</title>
+    <style>
+        body {
+            background-color: #ffccdd; /* Pastel pink */
+            font-family: 'Pixelated', sans-serif; /* Custom pixelated font */
+            margin: 0;
+            padding: 0;
+            color: #002147; /* Navy blue text */
+        }
+        .container {
+            display: flex;
+            flex-wrap: wrap;
+            padding: 20px;
+        }
+        .board {
+            width: 300px;
+            margin: 10px;
+            padding: 15px;
+            background: white;
+            border: 1px solid #ddd;
+            box-shadow: 2px 2px 12px rgba(0,0,0,0.1);
+            border-radius: 5px;
+        }
+        .button {
+            background-color: #99ff99; /* Light green */
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 16px;
+            margin: 4px 2px;
+            cursor: pointer;
+            border-radius: 5px;
+        }
+        /* Image slider styles */
+        .slider {
+            width: 100%;
+            overflow: hidden;
+        }
+        .slides {
+            display: flex;
+            transition: transform 0.5s ease;
+        }
+        .slide {
+            min-width: 100%;
+        }
+    </style>
 </head>
 <body>
-    <header>
-        <h1>Welcome to Your Knowledge Journal</h1>
-        <button onclick="toggleTheme()">Toggle Light/Dark Theme</button>
-        <input type="file" id="imageUpload" accept="image/*" onchange="uploadImage()" />
-    </header>
-    <section>
-        <h2>Learning Log</h2>
-        <textarea id="journalEntry" placeholder="Write your thoughts here..."></textarea>
-        <button onclick="saveEntry()">Save Entry</button>
-        <div id="entryList"></div>
-    </section>
-    <section>
-        <h2>Advanced Filtering</h2>
-        <input type="text" id="filterInput" placeholder="Filter entries" oninput="filterEntries()" />
-    </section>
-    <section>
-        <h2>Learning Checklists</h2>
-        <ul id="checklist"></ul>
-        <input type="text" id="checklistItem" placeholder="Add checklist item" />
-        <button onclick="addChecklistItem()">Add</button>
-    </section>
+    <h1>Welcome to My Knowledge Journal</h1>
+    <div class="container">
+        <div class="board">
+            <h2>Entry Title</h2>
+            <div class="slider">
+                <div class="slides">
+                    <div class="slide"><img src="image1.jpg" alt="Entry Image 1"></div>
+                    <div class="slide"><img src="image2.jpg" alt="Entry Image 2"></div>
+                    <div class="slide"><img src="image3.jpg" alt="Entry Image 3"></div>
+                </div>
+            </div>
+            <button class="button">Edit Entry</button>
+        </div>
+        <!-- Additional entries here -->
+    </div>
     <script>
-        // JavaScript for functionalities
-        function toggleTheme() {
-            document.body.classList.toggle('light-theme');
+        // JavaScript for image slider functionality
+        let currentIndex = 0;
+        const slides = document.querySelectorAll('.slide');
+        const totalSlides = slides.length;
+        function showSlide(index) {
+            const slidesContainer = document.querySelector('.slides');
+            const offset = -index * 100;
+            slidesContainer.style.transform = `translateX(${offset}%)`;
         }
-
-        function uploadImage() {
-            const fileInput = document.getElementById('imageUpload');
-            const file = fileInput.files[0];
-            if (file) {
-                const reader = new FileReader();
-                reader.onload = function (e) {
-                    const img = document.createElement('img');
-                    img.src = e.target.result;
-                    document.body.appendChild(img);
-                };
-                reader.readAsDataURL(file);
-            }
+        function nextSlide() {
+            currentIndex = (currentIndex + 1) % totalSlides;
+            showSlide(currentIndex);
         }
-
-        function saveEntry() {
-            const entry = document.getElementById('journalEntry').value;
-            const entryList = document.getElementById('entryList');
-            const newEntry = document.createElement('div');
-            newEntry.innerText = entry;
-            entryList.appendChild(newEntry);
-            document.getElementById('journalEntry').value = '';
-        }
-
-        function filterEntries() {
-            const filter = document.getElementById('filterInput').value.toLowerCase();
-            const entries = document.getElementById('entryList').children;
-            for (let entry of entries) {
-                if (entry.innerText.toLowerCase().includes(filter)) {
-                    entry.style.display = '';
-                } else {
-                    entry.style.display = 'none';
-                }
-            }
-        }
-
-        function addChecklistItem() {
-            const item = document.getElementById('checklistItem').value;
-            const checklist = document.getElementById('checklist');
-            const newItem = document.createElement('li');
-            newItem.innerText = item;
-            checklist.appendChild(newItem);
-            document.getElementById('checklistItem').value = '';
-        }
+        setInterval(nextSlide, 3000); // Change slide every 3 seconds
     </script>
 </body>
 </html>
